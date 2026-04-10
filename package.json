@@ -1,0 +1,33 @@
+{
+  "name": "pi-advisor",
+  "version": "0.1.0",
+  "description": "Pi extension package that adds a Claude-style advisor tool for strategic guidance during complex agent tasks.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "advisor",
+    "coding-agent"
+  ],
+  "license": "MIT",
+  "files": [
+    "index.ts",
+    "advisor.ts",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test tests/package.test.mjs",
+    "check": "npm test"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  }
+}
