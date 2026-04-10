@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "description": "Pi extension package that adds a Claude-style advisor tool for strategic guidance during complex agent tasks.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RimuruW/pi-advisor.git"
+  },
+  "homepage": "https://github.com/RimuruW/pi-advisor",
+  "bugs": {
+    "url": "https://github.com/RimuruW/pi-advisor/issues"
+  },
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -12,7 +20,8 @@
   "license": "MIT",
   "files": [
     "index.ts",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "test": "node --test tests/package.test.mjs",

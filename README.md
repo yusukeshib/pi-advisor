@@ -21,7 +21,7 @@ pi install npm:pi-advisor
 ### From a git repo
 
 ```bash
-pi install git:github.com/your-org/pi-advisor
+pi install git:github.com/RimuruW/pi-advisor
 ```
 
 ### For local development

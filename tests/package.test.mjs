@@ -30,6 +30,11 @@ test('package manifest declares a pi package entrypoint', () => {
   assert.ok(Array.isArray(pkg.files) && pkg.files.includes('index.ts'), 'package files should include index.ts');
   assert.equal(pkg.files?.includes('advisor.ts'), false, 'package files should not include advisor.ts');
 
+  assert.equal(pkg.repository?.type, 'git');
+  assert.match(pkg.repository?.url ?? '', /github\.com[:/]RimuruW\/pi-advisor(\.git)?$/i);
+  assert.equal(pkg.homepage, 'https://github.com/RimuruW/pi-advisor');
+  assert.equal(pkg.bugs?.url, 'https://github.com/RimuruW/pi-advisor/issues');
+
   for (const dep of ['@mariozechner/pi-ai', '@mariozechner/pi-coding-agent', '@mariozechner/pi-tui', '@sinclair/typebox']) {
     assert.equal(pkg.peerDependencies?.[dep], '*', `peerDependencies should include ${dep}`);
   }
@@ -46,8 +51,19 @@ test('README documents install and usage', () => {
 
   const readme = readFileSync(readmePath, 'utf8');
   assert.match(readme, /pi install npm:pi-advisor/i);
+  assert.match(readme, /pi install git:github\.com\/RimuruW\/pi-advisor/i);
   assert.match(readme, /\/advisor on/i);
   assert.match(readme, /pi package/i);
+});
+
+
+test('CHANGELOG includes the 0.1.0 release entry', () => {
+  const changelogPath = join(repoRoot, 'CHANGELOG.md');
+  assert.ok(existsSync(changelogPath), 'CHANGELOG.md should exist');
+
+  const changelog = readFileSync(changelogPath, 'utf8');
+  assert.match(changelog, /^# Changelog/m);
+  assert.match(changelog, /^## \[0\.1\.0\]/m);
 });
 
 test('package includes a license file matching package.json', () => {
