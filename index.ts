@@ -23,8 +23,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { completeSimple, type Message, type TextContent, type ThinkingContent, type ThinkingLevel, type ToolCall } from "@mariozechner/pi-ai";
-import { getAgentDir, getMarkdownTheme, keyHint, type ExtensionAPI, type SessionEntry, type ToolRenderResultOptions } from "@mariozechner/pi-coding-agent";
-import { Box, Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
+import { getAgentDir, keyHint, type ExtensionAPI, type SessionEntry, type ToolRenderResultOptions } from "@mariozechner/pi-coding-agent";
+import { Container, Spacer, Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 interface AdvisorConfig {
@@ -317,20 +317,6 @@ function summarizeAssistantContent(content: ContentBlock[]): ContentBlock[] {
 		});
 }
 
-function summarizeToolResultContent(toolName: string, content: unknown): Array<{ type: "text"; text: string } | { type: string; [key: string]: unknown }> {
-	if (!Array.isArray(content)) return [];
-	return content.map((block) => {
-		if (!block || typeof block !== "object" || (block as { type?: string }).type !== "text") {
-			return block as { type: string; [key: string]: unknown };
-		}
-		const textBlock = block as { type: "text"; text: string };
-		return {
-			...textBlock,
-			text: clampText(textBlock.text, toolName === "bash" ? 28 : MAX_TEXT_LINES, toolName === "bash" ? 2200 : MAX_TEXT_CHARS),
-		};
-	});
-}
-
 function buildAdvisorMessages(branch: SessionEntry[], stageInfo: AdvisorStageInfo, recentToolActivity: string, maxMessages: number): Message[] {
 	const transcript: Message[] = [];
 
@@ -351,9 +337,10 @@ function buildAdvisorMessages(branch: SessionEntry[], stageInfo: AdvisorStageInf
 		}
 
 		if (msg.role === "toolResult") {
-			if (msg.toolName === "advisor") continue;
-			const content = summarizeToolResultContent(msg.toolName, msg.content);
-			if (content.length > 0) transcript.push({ ...msg, content } as Message);
+			// Skip tool results entirely: OpenAI completions API requires role="tool" with tool_call_id,
+			// but completeSimple does not convert toolResult messages to that format.
+			// The advisor already receives tool activity via the recentToolActivity summary.
+			continue;
 		}
 	}
 
@@ -556,11 +543,13 @@ The advisor cannot call tools — it only provides text advice for the executor.
 					},
 				);
 
-				const adviceText = response.content
-					.filter((block): block is TextContent => block.type === "text")
-					.map((block) => block.text)
-					.join("\n")
-					.trim();
+				const textBlocks = response.content.filter((b): b is TextContent => b.type === "text");
+				const thinkingBlocks = response.content.filter((b): b is ThinkingContent => b.type === "thinking");
+				const adviceText = textBlocks.map((b) => b.text).join("\n").trim();
+				const thinkingText = thinkingBlocks.map((b) => b.thinking).join("\n").trim();
+
+				// If no text but thinking exists, use thinking as fallback
+				const finalText = adviceText || (thinkingText ? `(thinking)\n${thinkingText}` : "");
 
 				const usage: AdvisorUsage = {
 					inputTokens: response.usage?.input ?? 0,
@@ -568,11 +557,19 @@ The advisor cannot call tools — it only provides text advice for the executor.
 					model: config.model,
 				};
 
+				// Detect silent failures: empty content with no error thrown
+				if (!finalText && !response.errorMessage) {
+					return {
+						content: [{ type: "text", text: `(Advisor returned empty response — model: ${config.provider}/${config.model}, stop: ${response.stopReason}). Check that the model supports this API format.` }],
+						details: { usage, callNumber: usesThisRun, stage: stageInfo.stage, error: "empty_response" } as AdvisorDetails,
+					};
+				}
+
 				pi.appendEntry("advisor-usage", usage);
 
 				return {
-					content: [{ type: "text", text: adviceText || "(Advisor returned empty response)" }],
-					details: { usage, callNumber: usesThisRun, stage: stageInfo.stage } as AdvisorDetails,
+					content: [{ type: "text", text: finalText || response.errorMessage || "(Advisor returned empty response)" }],
+					details: { usage, callNumber: usesThisRun, stage: stageInfo.stage, error: response.errorMessage ? "model_error" : undefined } as AdvisorDetails,
 				};
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
@@ -587,7 +584,7 @@ The advisor cannot call tools — it only provides text advice for the executor.
 			return new Container();
 		},
 
-		renderResult(result, options: ToolRenderResultOptions, theme) {
+		renderResult(result, options: ToolRenderResultOptions, theme, _context) {
 			const details = result.details as AdvisorDetails | undefined;
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "(no advice)";
 
@@ -599,27 +596,27 @@ The advisor cannot call tools — it only provides text advice for the executor.
 				return new Text(theme.fg("error", "Advisor unavailable: ") + theme.fg("dim", text), 0, 0);
 			}
 
-			const box = new Box(1, 1, (content) => theme.bg("customMessageBg", content));
+			const container = new Container();
 			let header = theme.fg("toolTitle", theme.bold("Advisor"));
 			if (details?.stage) header += " " + theme.fg("muted", stageLabel(details.stage));
 			if (details?.callNumber) header += theme.fg("dim", ` #${details.callNumber}/${config.maxUsesPerRun}`);
-			box.addChild(new Text(header, 0, 0));
-			box.addChild(new Spacer(1));
+			container.addChild(new Text(header, 0, 0));
+			container.addChild(new Spacer(1));
 
 			if (options.expanded) {
-				box.addChild(new Markdown(text, 0, 0, getMarkdownTheme()));
+				container.addChild(new Text(text, 0, 0));
 			} else {
 				const preview = buildPreview(text, 6);
-				box.addChild(new Markdown(preview.preview, 0, 0, getMarkdownTheme()));
+				container.addChild(new Text(preview.preview, 0, 0));
 				if (preview.truncated) {
-					box.addChild(new Spacer(1));
-					box.addChild(new Text(theme.fg("muted", keyHint("app.tools.expand", "to expand")), 0, 0));
+					container.addChild(new Spacer(1));
+					container.addChild(new Text(theme.fg("muted", keyHint("app.tools.expand", "to expand")), 0, 0));
 				}
 			}
 
 			if (details?.usage) {
-				box.addChild(new Spacer(1));
-				box.addChild(
+				container.addChild(new Spacer(1));
+				container.addChild(
 					new Text(
 						theme.fg("dim", `↑${formatTokens(details.usage.inputTokens)} ↓${formatTokens(details.usage.outputTokens)} ${details.usage.model}`),
 						0,
@@ -628,7 +625,7 @@ The advisor cannot call tools — it only provides text advice for the executor.
 				);
 			}
 
-			return box;
+			return container;
 		},
 	});
 
