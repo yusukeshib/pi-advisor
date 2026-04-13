@@ -20,6 +20,7 @@
   "license": "MIT",
   "files": [
     "index.ts",
+    "advisor-messages.ts",
     "README.md",
     "CHANGELOG.md"
   ],

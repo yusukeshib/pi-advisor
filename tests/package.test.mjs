@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { buildAdvisorMessages } from '../advisor-messages.ts';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,6 +29,7 @@ test('package manifest declares a pi package entrypoint', () => {
   assert.ok(Array.isArray(pkg.keywords) && pkg.keywords.includes('pi-package'), 'keywords should include pi-package');
   assert.deepEqual(pkg.pi?.extensions, ['./index.ts']);
   assert.ok(Array.isArray(pkg.files) && pkg.files.includes('index.ts'), 'package files should include index.ts');
+  assert.ok(pkg.files?.includes('advisor-messages.ts'), 'package files should include advisor-messages.ts');
   assert.equal(pkg.files?.includes('advisor.ts'), false, 'package files should not include advisor.ts');
 
   assert.equal(pkg.repository?.type, 'git');
@@ -71,6 +73,40 @@ test('package includes a license file matching package.json', () => {
   assert.ok(existsSync(licensePath), 'LICENSE should exist');
   const license = readFileSync(licensePath, 'utf8');
   assert.match(license, /MIT License/i);
+});
+
+test('advisor transcript strips historical tool calls from assistant messages', () => {
+  const stageInfo = { stage: 'initial', reason: 'test' };
+  const branch = [
+    {
+      type: 'message',
+      message: {
+        role: 'user',
+        content: 'Investigate this issue',
+        timestamp: 1,
+      },
+    },
+    {
+      type: 'message',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'I will inspect the file.' },
+          { type: 'toolCall', id: 'call_abc123', name: 'read', arguments: { path: 'src/foo.ts' } },
+        ],
+        timestamp: 2,
+      },
+    },
+  ];
+
+  const messages = buildAdvisorMessages(branch, stageInfo, '- read src/foo.ts', 10);
+  assert.equal(messages.length, 3);
+
+  const assistant = messages[2];
+  assert.equal(assistant.role, 'assistant');
+  assert.deepEqual(assistant.content, [{ type: 'text', text: 'I will inspect the file.' }]);
+  assert.doesNotMatch(JSON.stringify(messages), /call_abc123/);
+  assert.doesNotMatch(JSON.stringify(messages), /"toolCall"/);
 });
 
 test('pi can load the package entrypoint as an extension smoke test', () => {

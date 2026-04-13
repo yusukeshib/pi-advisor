@@ -24,6 +24,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { completeSimple, type Message, type TextContent, type ThinkingContent, type ThinkingLevel, type ToolCall } from "@mariozechner/pi-ai";
 import { getAgentDir, keyHint, type ExtensionAPI, type SessionEntry, type ToolRenderResultOptions } from "@mariozechner/pi-coding-agent";
+import { buildAdvisorMessages } from "./advisor-messages.ts";
 import { Container, Spacer, Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 
@@ -296,80 +297,6 @@ function detectStage(events: RunToolEvent[], advisorCallsThisRun: number): Advis
 		stage: "initial",
 		reason: "The executor is still in the early orientation phase.",
 	};
-}
-
-function summarizeUserContent(content: Message["content"]): Message["content"] {
-	if (typeof content === "string") return clampText(content, 40, 2800);
-	if (!Array.isArray(content)) return content;
-	return content.map((block) => {
-		if (block.type !== "text") return block;
-		return { ...block, text: clampText(block.text, 40, 2800) };
-	});
-}
-
-function summarizeAssistantContent(content: ContentBlock[]): ContentBlock[] {
-	return content
-		.filter((block) => block.type !== "thinking")
-		.filter((block) => !(block.type === "toolCall" && block.name === "advisor"))
-		.map((block) => {
-			if (block.type !== "text") return block;
-			return { ...block, text: clampText(block.text) };
-		});
-}
-
-function buildAdvisorMessages(branch: SessionEntry[], stageInfo: AdvisorStageInfo, recentToolActivity: string, maxMessages: number): Message[] {
-	const transcript: Message[] = [];
-
-	for (const entry of branch) {
-		if (entry.type !== "message" || !("message" in entry)) continue;
-		const msg = entry.message;
-		if (!msg || !("role" in msg)) continue;
-
-		if (msg.role === "user") {
-			transcript.push({ ...msg, content: summarizeUserContent(msg.content) } as Message);
-			continue;
-		}
-
-		if (msg.role === "assistant") {
-			const content = Array.isArray(msg.content) ? summarizeAssistantContent(msg.content as ContentBlock[]) : [];
-			if (content.length > 0) transcript.push({ ...msg, content } as Message);
-			continue;
-		}
-
-		if (msg.role === "toolResult") {
-			// Skip tool results entirely: OpenAI completions API requires role="tool" with tool_call_id,
-			// but completeSimple does not convert toolResult messages to that format.
-			// The advisor already receives tool activity via the recentToolActivity summary.
-			continue;
-		}
-	}
-
-	if (transcript.length === 0) return [];
-
-	const contextMessage: Message = {
-		role: "user",
-		content: [
-			`Current advisory stage: ${stageInfo.stage}`,
-			`Why this stage: ${stageInfo.reason}`,
-			recentToolActivity ? `Recent tool activity:\n${recentToolActivity}` : "Recent tool activity: none yet",
-		].join("\n\n"),
-		timestamp: Date.now(),
-	};
-
-	if (transcript.length <= maxMessages) {
-		return [contextMessage, ...transcript];
-	}
-
-	const keepFirst = 2;
-	const keepLast = maxMessages - keepFirst - 1;
-	const omitted = transcript.length - keepFirst - keepLast;
-	const omittedMessage: Message = {
-		role: "user",
-		content: `[${omitted} earlier transcript messages omitted. Focus on the retained task framing and the most recent evidence.]`,
-		timestamp: Date.now(),
-	};
-
-	return [contextMessage, ...transcript.slice(0, keepFirst), omittedMessage, ...transcript.slice(-keepLast)];
 }
 
 function buildActiveToolsSummary(pi: ExtensionAPI): string {
