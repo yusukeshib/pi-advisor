@@ -52,11 +52,78 @@ export function summarizeAssistantContent(content: Array<{ type?: string; text?:
 		.map((block) => ({ ...block, text: clampText(block.text) }));
 }
 
+export type ExecutorSignals = {
+	phase: "exploring" | "mutating" | "verifying" | "stuck";
+	mutationsCount: number;
+	verificationCommands: string[];
+	recentFailures: string[];
+};
+
+function buildContextPolicy(): string {
+	return `Context policy:
+- Assistant tool calls are stripped from the transcript below.
+- Tool results are not replayed.
+- User task framing is retained where possible.
+- If truncated: earliest messages omitted, focus on recent evidence.`;
+}
+
+export function isVerificationCommand(command?: string): boolean {
+	if (!command) return false;
+	return /\b(test|tests|jest|vitest|pytest|rspec|cargo test|go test|npm run test|npm test|pnpm test|pnpm run test|yarn test|check|lint|typecheck|tsc|build)\b/i.test(command);
+}
+
+export function shouldNudge(
+	events: { toolName: string; command?: string }[],
+	advisorCallsThisRun: number,
+	advisorEnabled: boolean,
+	maxUsesPerRun: number,
+): string | null {
+	if (!advisorEnabled) return null;
+	if (advisorCallsThisRun >= maxUsesPerRun) return null;
+
+	const hasMutation = events.some((e) => e.toolName === "edit" || e.toolName === "write");
+	const hasVerification = events.some((e) => e.toolName === "bash" && isVerificationCommand(e.command));
+
+	if (hasMutation && !hasVerification) {
+		return "Code changed, tests not run. Consider advisor({stage: 'final-check'})";
+	}
+	return null;
+}
+
+function buildSignalsBlock(signals: ExecutorSignals): string {
+	const vc = signals.verificationCommands.length > 0
+		? signals.verificationCommands.join(", ")
+		: "none";
+	const rf = signals.recentFailures.length > 0
+		? signals.recentFailures.join("; ")
+		: "none";
+	return `Executor signals:
+- Phase: ${signals.phase}
+- Mutations: ${signals.mutationsCount}
+- Verification commands run: ${vc}
+- Recent failures: ${rf}`;
+}
+
+function ensureAdvisorRequestClosure(messages: AdvisorMessage[]): AdvisorMessage[] {
+	if (messages.length === 0) return messages;
+	const last = messages[messages.length - 1];
+	if (last.role === "user") return messages;
+	return [
+		...messages,
+		{
+			role: "user",
+			content: "Provide your advisory assessment now based on the context above.",
+			timestamp: Date.now(),
+		},
+	];
+}
+
 export function buildAdvisorMessages(
 	branch: SessionEntryLike[],
 	stageInfo: AdvisorStageInfoLike,
 	recentToolActivity: string,
 	maxMessages: number,
+	signals?: ExecutorSignals,
 ): AdvisorMessage[] {
 	const transcript: AdvisorMessage[] = [];
 
@@ -83,18 +150,20 @@ export function buildAdvisorMessages(
 
 	if (transcript.length === 0) return [];
 
+	const contextBlocks: string[] = [buildContextPolicy()];
+	contextBlocks.push(`Current advisory stage: ${stageInfo.stage}`);
+	contextBlocks.push(`Why this stage: ${stageInfo.reason}`);
+	if (signals) contextBlocks.push(buildSignalsBlock(signals));
+	contextBlocks.push(recentToolActivity ? `Recent tool activity:\n${recentToolActivity}` : "Recent tool activity: none yet");
+
 	const contextMessage: AdvisorMessage = {
 		role: "user",
-		content: [
-			`Current advisory stage: ${stageInfo.stage}`,
-			`Why this stage: ${stageInfo.reason}`,
-			recentToolActivity ? `Recent tool activity:\n${recentToolActivity}` : "Recent tool activity: none yet",
-		].join("\n\n"),
+		content: contextBlocks.join("\n\n"),
 		timestamp: Date.now(),
 	};
 
 	if (transcript.length <= maxMessages) {
-		return [contextMessage, ...transcript];
+		return ensureAdvisorRequestClosure([contextMessage, ...transcript]);
 	}
 
 	const keepFirst = 2;
@@ -106,5 +175,5 @@ export function buildAdvisorMessages(
 		timestamp: Date.now(),
 	};
 
-	return [contextMessage, ...transcript.slice(0, keepFirst), omittedMessage, ...transcript.slice(-keepLast)];
+	return ensureAdvisorRequestClosure([contextMessage, ...transcript.slice(0, keepFirst), omittedMessage, ...transcript.slice(-keepLast)]);
 }

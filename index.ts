@@ -23,9 +23,9 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import { completeSimple, type Message, type TextContent, type ThinkingContent, type ThinkingLevel, type ToolCall } from "@earendil-works/pi-ai";
-import { getAgentDir, keyHint, type ExtensionAPI, type SessionEntry, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import { buildAdvisorMessages } from "./src/advisor-messages.ts";
+import { completeSimple, type TextContent, type ThinkingContent, type ThinkingLevel } from "@earendil-works/pi-ai";
+import { getAgentDir, keyHint, type ExtensionAPI, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
+import { buildAdvisorMessages, isVerificationCommand, shouldNudge, type ExecutorSignals } from "./src/advisor-messages.ts";
 import { Container, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
@@ -68,8 +68,6 @@ interface RunToolEvent {
 	timestamp: number;
 }
 
-type ContentBlock = TextContent | ThinkingContent | ToolCall;
-
 const DEFAULT_CONFIG: AdvisorConfig = {
 	enabled: false,
 	provider: "anthropic",
@@ -80,8 +78,6 @@ const DEFAULT_CONFIG: AdvisorConfig = {
 	maxContextMessages: 18,
 };
 
-const MAX_TEXT_LINES = 24;
-const MAX_TEXT_CHARS = 1800;
 const MAX_SYSTEM_PROMPT_CHARS = 12000;
 const RECENT_TOOL_SUMMARY_COUNT = 8;
 
@@ -110,20 +106,23 @@ Keep it short. The executor will read your advice and immediately act on it.`;
 const EXECUTOR_ADVISOR_GUIDANCE = `
 <advisor-tool>
 You have access to an advisor tool that consults a stronger model for strategic guidance.
+You remain executor. Advisor gives guidance only. You decide and continue.
 
-WHEN TO CALL:
-- INITIAL: After 2-3 exploratory reads, before committing to an implementation approach
-- RECOVERY: When stuck, confused, or after a failed attempt
-- FINAL: After implementation + verification output, before declaring the task complete
+Use advisor when:
+- After 2-3 exploratory reads, before committing to an implementation approach
+- Stuck, confused, or after a failed attempt
+- After implementation + verification output, before declaring the task complete
 
-WHEN NOT TO CALL:
-- Simple, well-defined tasks you can complete in <5 tool calls
+Do not use advisor for:
+- Syntax questions, API lookups, or routine implementation steps
+- Tasks completable in <5 tool calls
 - Mid-execution when you already have a clear plan and it's working
+- Checking whether your plan is "okay" — just execute and call advisor at the stage boundaries above
 
-HOW TO USE THE RESPONSE:
+How to use the response:
 - Advisor returns: verdict ("On track" / "Course-correct" / "Not done yet") + action items
 - Execute the action items in order unless you have concrete evidence that contradicts them
-- If you disagree with the advice, state the conflict explicitly in your next response — do not silently ignore
+- If you disagree with the advice, state the conflict explicitly — do not silently ignore
 </advisor-tool>`;
 
 function configPath(): string {
@@ -163,46 +162,28 @@ function formatTokens(count: number): string {
 	return `${(count / 1000000).toFixed(1)}M`;
 }
 
+const STAGE_LABELS: Record<AdvisorStage, string> = {
+	"initial": "initial",
+	"recovery": "recovery",
+	"final-check": "final check",
+};
+
 function stageLabel(stage: AdvisorStage): string {
-	switch (stage) {
-		case "initial":
-			return "initial";
-		case "recovery":
-			return "recovery";
-		case "final-check":
-			return "final check";
-	}
+	return STAGE_LABELS[stage];
 }
 
+const STAGE_DIRECTIVES: Record<AdvisorStage, string> = {
+	"initial": "Executor is still exploring. Provide: (1) the shortest viable approach, (2) the main risk to avoid, (3) 2-3 concrete first steps.",
+	"recovery": "Executor hit friction or is off-track. Provide: (1) what went wrong, (2) what to stop doing, (3) corrected path forward.",
+	"final-check": "Implementation appears done. Verify: (1) are all requirements met? (2) is verification evidence sufficient? (3) any missing edge cases? Give explicit sign-off or list what's missing.",
+};
+
 function stageDirective(stage: AdvisorStage): string {
-	switch (stage) {
-		case "initial":
-			return "Executor is still exploring. Provide: (1) the shortest viable approach, (2) the main risk to avoid, (3) 2-3 concrete first steps.";
-		case "recovery":
-			return "Executor hit friction or is off-track. Provide: (1) what went wrong, (2) what to stop doing, (3) corrected path forward.";
-		case "final-check":
-			return "Implementation appears done. Verify: (1) are all requirements met? (2) is verification evidence sufficient? (3) any missing edge cases? Give explicit sign-off or list what's missing.";
-	}
+	return STAGE_DIRECTIVES[stage];
 }
 
 function squeezeWhitespace(text: string): string {
 	return text.replace(/\s+/g, " ").trim();
-}
-
-function clampText(text: string, maxLines: number = MAX_TEXT_LINES, maxChars: number = MAX_TEXT_CHARS): string {
-	const normalized = text.trim();
-	if (!normalized) return normalized;
-
-	const lines = normalized.split("\n");
-	let truncated = false;
-	let next = lines.slice(0, maxLines).join("\n");
-	if (lines.length > maxLines) truncated = true;
-	if (next.length > maxChars) {
-		next = `${next.slice(0, maxChars).trimEnd()}…`;
-		truncated = true;
-	}
-	if (!truncated) return next;
-	return `${next}\n[truncated for advisor context]`;
 }
 
 function extractPrimaryText(content: unknown): string {
@@ -219,11 +200,6 @@ function extractBashExitCode(text: string): number | undefined {
 	if (!match) return undefined;
 	const code = Number.parseInt(match[1], 10);
 	return Number.isNaN(code) ? undefined : code;
-}
-
-function isVerificationCommand(command?: string): boolean {
-	if (!command) return false;
-	return /\b(test|tests|jest|vitest|pytest|rspec|cargo test|go test|npm run test|npm test|pnpm test|pnpm run test|yarn test|check|lint|typecheck|tsc|build)\b/i.test(command);
 }
 
 function summarizeToolExecution(toolName: string, args: any, result: any, isError: boolean): RunToolEvent {
@@ -331,6 +307,28 @@ function buildRecentToolActivity(events: RunToolEvent[]): string {
 		.join("\n");
 }
 
+function buildExecutorSignals(events: RunToolEvent[]): ExecutorSignals {
+	const mutationsCount = events.filter((e) => e.toolName === "edit" || e.toolName === "write").length;
+	const verificationCommands = events
+		.filter((e) => e.toolName === "bash" && isVerificationCommand(e.command))
+		.map((e) => e.command!);
+	const recentFailures = events
+		.filter((e) => e.isError)
+		.slice(-3)
+		.map((e) => e.summary);
+
+	let phase: ExecutorSignals["phase"] = "exploring";
+	if (mutationsCount > 0 && verificationCommands.length > 0) {
+		phase = "verifying";
+	} else if (mutationsCount > 0) {
+		phase = "mutating";
+	} else if (recentFailures.length > 0) {
+		phase = "stuck";
+	}
+
+	return { phase, mutationsCount, verificationCommands, recentFailures };
+}
+
 function buildAdvisorPrompt(executorSystemPrompt: string, activeToolsSummary: string, stageInfo: AdvisorStageInfo): string {
 	const trimmedSystemPrompt = executorSystemPrompt.trim();
 	const boundedSystemPrompt = trimmedSystemPrompt.length > MAX_SYSTEM_PROMPT_CHARS
@@ -372,21 +370,25 @@ export default function advisorExtension(pi: ExtensionAPI) {
 		};
 	});
 
-	pi.on("agent_start", async () => {
+	pi.on("agent_start", async (_, ctx) => {
 		usesThisRun = 0;
 		runToolEvents = [];
 		toolArgsById.clear();
+		ctx.ui.setStatus("advisor-nudge", undefined);
 	});
 
 	pi.on("tool_execution_start", async (event) => {
 		toolArgsById.set(event.toolCallId, event.args);
 	});
 
-	pi.on("tool_execution_end", async (event) => {
+	pi.on("tool_execution_end", async (event, ctx) => {
 		if (event.toolName === "advisor") return;
 		const args = toolArgsById.get(event.toolCallId);
 		toolArgsById.delete(event.toolCallId);
 		runToolEvents.push(summarizeToolExecution(event.toolName, args, event.result, event.isError));
+
+		const hint = shouldNudge(runToolEvents, usesThisRun, config.enabled, config.maxUsesPerRun);
+		ctx.ui.setStatus("advisor-nudge", hint ?? undefined);
 	});
 
 	pi.on("session_start", async () => {
@@ -427,6 +429,7 @@ The advisor sees the conversation transcript, your system prompt, and recent too
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			config = loadConfig();
+			ctx.ui.setStatus("advisor-nudge", undefined);
 
 			if (usesThisRun >= config.maxUsesPerRun) {
 				return {
@@ -458,7 +461,8 @@ The advisor sees the conversation transcript, your system prompt, and recent too
 				: detectStage(runToolEvents, usesThisRun);
 			const recentToolActivity = buildRecentToolActivity(runToolEvents);
 			const branch = ctx.sessionManager.getBranch();
-			const advisorMessages = buildAdvisorMessages(branch, stageInfo, recentToolActivity, config.maxContextMessages);
+			const signals = buildExecutorSignals(runToolEvents);
+			const advisorMessages = buildAdvisorMessages(branch, stageInfo, recentToolActivity, config.maxContextMessages, signals);
 			if (advisorMessages.length === 0) {
 				return {
 					content: [{ type: "text", text: "No conversation context available for advisor. Continue without advice." }],

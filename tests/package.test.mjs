@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { buildAdvisorMessages } from '../src/advisor-messages.ts';
+import { buildAdvisorMessages, shouldNudge } from '../src/advisor-messages.ts';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -103,13 +103,207 @@ test('advisor transcript strips historical tool calls from assistant messages', 
   ];
 
   const messages = buildAdvisorMessages(branch, stageInfo, '- read src/foo.ts', 10);
-  assert.equal(messages.length, 3);
+  assert.equal(messages.length, 4);
 
   const assistant = messages[2];
   assert.equal(assistant.role, 'assistant');
   assert.deepEqual(assistant.content, [{ type: 'text', text: 'I will inspect the file.' }]);
   assert.doesNotMatch(JSON.stringify(messages), /call_abc123/);
   assert.doesNotMatch(JSON.stringify(messages), /"toolCall"/);
+
+  const closure = messages[3];
+  assert.equal(closure.role, 'user');
+  assert.match(closure.content, /Provide your advisory assessment/);
+});
+
+test('advisor closure: ends with assistant → closure appended', () => {
+  const stageInfo = { stage: 'initial', reason: 'test' };
+  const branch = [
+    {
+      type: 'message',
+      message: { role: 'user', content: 'Investigate this issue', timestamp: 1 },
+    },
+    {
+      type: 'message',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'I will inspect the file.' }],
+        timestamp: 2,
+      },
+    },
+  ];
+
+  const messages = buildAdvisorMessages(branch, stageInfo, '', 10);
+  const last = messages[messages.length - 1];
+  assert.equal(last.role, 'user');
+  assert.match(last.content, /Provide your advisory assessment/);
+});
+
+test('advisor closure: ends with user → unchanged', () => {
+  const stageInfo = { stage: 'initial', reason: 'test' };
+  const branch = [
+    {
+      type: 'message',
+      message: { role: 'user', content: 'Investigate this issue', timestamp: 1 },
+    },
+    {
+      type: 'message',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'I will inspect the file.' }],
+        timestamp: 2,
+      },
+    },
+    {
+      type: 'message',
+      message: { role: 'user', content: 'Next question here', timestamp: 3 },
+    },
+  ];
+
+  const messages = buildAdvisorMessages(branch, stageInfo, '', 10);
+  const last = messages[messages.length - 1];
+  assert.equal(last.role, 'user');
+  assert.equal(last.content, 'Next question here');
+});
+
+test('advisor closure: truncated path ends with assistant → closure appended', () => {
+  const stageInfo = { stage: 'initial', reason: 'test' };
+  const branch = [];
+  for (let i = 0; i < 30; i++) {
+    branch.push({
+      type: 'message',
+      message: { role: 'user', content: `Question ${i}`, timestamp: i * 2 },
+    });
+    branch.push({
+      type: 'message',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: `Answer ${i}` }],
+        timestamp: i * 2 + 1,
+      },
+    });
+  }
+
+  const messages = buildAdvisorMessages(branch, stageInfo, '', 6);
+  const last = messages[messages.length - 1];
+  assert.equal(last.role, 'user');
+  assert.match(last.content, /Provide your advisory assessment/);
+});
+
+test('advisor context: includes context policy block', () => {
+  const stageInfo = { stage: 'initial', reason: 'test' };
+  const branch = [
+    {
+      type: 'message',
+      message: { role: 'user', content: 'Task', timestamp: 1 },
+    },
+  ];
+
+  const messages = buildAdvisorMessages(branch, stageInfo, '- read foo', 10);
+  const contextMsg = messages[0];
+  assert.equal(contextMsg.role, 'user');
+  assert.match(contextMsg.content, /Context policy/);
+  assert.match(contextMsg.content, /Assistant tool calls are stripped/);
+});
+
+test('advisor context: includes executor signals when provided', () => {
+  const stageInfo = { stage: 'initial', reason: 'test' };
+  const branch = [
+    {
+      type: 'message',
+      message: { role: 'user', content: 'Task', timestamp: 1 },
+    },
+  ];
+
+  const signals = {
+    phase: 'exploring',
+    mutationsCount: 0,
+    verificationCommands: [],
+    recentFailures: [],
+  };
+
+  const messages = buildAdvisorMessages(branch, stageInfo, '- read foo', 10, signals);
+  const contextMsg = messages[0];
+  assert.match(contextMsg.content, /Executor signals/);
+  assert.match(contextMsg.content, /Phase: exploring/);
+  assert.match(contextMsg.content, /Mutations: 0/);
+});
+
+test('advisor context: no executor signals block when signals omitted', () => {
+  const stageInfo = { stage: 'initial', reason: 'test' };
+  const branch = [
+    {
+      type: 'message',
+      message: { role: 'user', content: 'Task', timestamp: 1 },
+    },
+  ];
+
+  const messages = buildAdvisorMessages(branch, stageInfo, '- read foo', 10);
+  const contextMsg = messages[0];
+  assert.doesNotMatch(contextMsg.content, /Executor signals/);
+});
+
+test('advisor context: signals reflect mutations and failures', () => {
+  const stageInfo = { stage: 'recovery', reason: 'test' };
+  const branch = [
+    {
+      type: 'message',
+      message: { role: 'user', content: 'Task', timestamp: 1 },
+    },
+  ];
+
+  const signals = {
+    phase: 'verifying',
+    mutationsCount: 3,
+    verificationCommands: ['pnpm test', 'pnpm lint'],
+    recentFailures: ['$ tsc (exit 2)'],
+  };
+
+  const messages = buildAdvisorMessages(branch, stageInfo, '- edit src/foo.ts', 10, signals);
+  const contextMsg = messages[0];
+  assert.match(contextMsg.content, /Phase: verifying/);
+  assert.match(contextMsg.content, /Mutations: 3/);
+  assert.match(contextMsg.content, /pnpm test, pnpm lint/);
+  assert.match(contextMsg.content, /\$ tsc \(exit 2\)/);
+});
+
+test('shouldNudge: no mutations → no hint', () => {
+  const events = [{ toolName: 'read', command: undefined }];
+  assert.equal(shouldNudge(events, 0, true, 3), null);
+});
+
+test('shouldNudge: mutations with no verification → hint', () => {
+  const events = [
+    { toolName: 'read' },
+    { toolName: 'edit' },
+  ];
+  assert.match(shouldNudge(events, 0, true, 3), /Code changed, tests not run/);
+});
+
+test('shouldNudge: mutations with verification → no hint', () => {
+  const events = [
+    { toolName: 'edit' },
+    { toolName: 'bash', command: 'npm test' },
+  ];
+  assert.equal(shouldNudge(events, 0, true, 3), null);
+});
+
+test('shouldNudge: advisor disabled → no hint', () => {
+  const events = [{ toolName: 'edit' }];
+  assert.equal(shouldNudge(events, 0, false, 3), null);
+});
+
+test('shouldNudge: max uses reached → no hint', () => {
+  const events = [{ toolName: 'edit' }];
+  assert.equal(shouldNudge(events, 3, true, 3), null);
+});
+
+// ---
+
+test('advisor closure: empty transcript → no closure', () => {
+  const stageInfo = { stage: 'initial', reason: 'test' };
+  const messages = buildAdvisorMessages([], stageInfo, '', 10);
+  assert.equal(messages.length, 0);
 });
 
 test('pi can load the package entrypoint as an extension smoke test', () => {
