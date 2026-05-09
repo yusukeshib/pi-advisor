@@ -37,7 +37,7 @@ test('package manifest declares a pi package entrypoint', () => {
   assert.equal(pkg.homepage, 'https://github.com/RimuruW/pi-advisor');
   assert.equal(pkg.bugs?.url, 'https://github.com/RimuruW/pi-advisor/issues');
 
-  for (const dep of ['@mariozechner/pi-ai', '@mariozechner/pi-coding-agent', '@mariozechner/pi-tui', '@sinclair/typebox']) {
+  for (const dep of ['@earendil-works/pi-ai', '@earendil-works/pi-coding-agent', '@earendil-works/pi-tui', 'typebox']) {
     assert.equal(pkg.peerDependencies?.[dep], '*', `peerDependencies should include ${dep}`);
   }
 });

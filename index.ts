@@ -23,11 +23,11 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import { completeSimple, type Message, type TextContent, type ThinkingContent, type ThinkingLevel, type ToolCall } from "@mariozechner/pi-ai";
-import { getAgentDir, keyHint, type ExtensionAPI, type SessionEntry, type ToolRenderResultOptions } from "@mariozechner/pi-coding-agent";
+import { completeSimple, type Message, type TextContent, type ThinkingContent, type ThinkingLevel, type ToolCall } from "@earendil-works/pi-ai";
+import { getAgentDir, keyHint, type ExtensionAPI, type SessionEntry, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { buildAdvisorMessages } from "./src/advisor-messages.ts";
-import { Container, Spacer, Text } from "@mariozechner/pi-tui";
-import { Type } from "@sinclair/typebox";
+import { Container, Spacer, Text } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 
 interface AdvisorConfig {
 	enabled: boolean;
@@ -412,17 +412,20 @@ export default function advisorExtension(pi: ExtensionAPI) {
 		label: "Consult advisor",
 		description: `Consult a stronger model for strategic guidance. Returns a verdict (On track / Course-correct / Not done yet) plus numbered action items.
 The advisor sees the conversation transcript, your system prompt, and recent tool activity. It cannot call tools.`,
-		promptSnippet: "advisor: consult a stronger model for strategic guidance (returns verdict + action items)",
+		promptSnippet: "advisor({ stage? }): consult stronger model for strategic guidance → verdict + action items",
 		promptGuidelines: [
-			"Call INITIAL after 2-3 exploratory reads, before committing to an approach",
-			"Call RECOVERY when stuck, confused, or after a failed attempt",
-			"Call FINAL after implementation + verification output, before declaring complete",
-			"Skip for simple tasks completable in <5 tool calls",
-			"Execute returned action items unless you have contradicting evidence — if so, state the conflict explicitly",
+			"Call advisor({ stage: 'initial' }) for non-trivial tasks after 2-3 reads, before committing to an approach",
+			"Call advisor({ stage: 'recovery' }) when stuck, confused, or after a failed attempt",
+			"Call advisor({ stage: 'final-check' }) after implementation + verification, before declaring complete",
+			"Call advisor() with no args to auto-detect the stage",
+			"Skip for tasks completable in <5 tool calls",
+			"Execute returned action items unless evidence contradicts — then state the conflict",
 		],
-		parameters: Type.Object({}),
+		parameters: Type.Object({
+			stage: Type.Optional(Type.Union([Type.Literal("initial"), Type.Literal("recovery"), Type.Literal("final-check")])),
+		}),
 
-		async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			config = loadConfig();
 
 			if (usesThisRun >= config.maxUsesPerRun) {
@@ -450,7 +453,9 @@ The advisor sees the conversation transcript, your system prompt, and recent too
 				};
 			}
 
-			const stageInfo = detectStage(runToolEvents, usesThisRun);
+			const stageInfo = params.stage
+				? { stage: params.stage, reason: "Executor explicitly signaled this stage." }
+				: detectStage(runToolEvents, usesThisRun);
 			const recentToolActivity = buildRecentToolActivity(runToolEvents);
 			const branch = ctx.sessionManager.getBranch();
 			const advisorMessages = buildAdvisorMessages(branch, stageInfo, recentToolActivity, config.maxContextMessages);
