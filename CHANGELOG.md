@@ -7,13 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-09
+
 ### Added
-- Optional `stage` parameter for the `advisor` tool (`"initial"`, `"recovery"`, `"final-check"`) — lets the executor explicitly signal its current phase, with auto-detect as fallback.
+- Optional `stage` parameter for the `advisor` tool (`"initial"`, `"recovery"`, `"final-check"`) so executors can explicitly signal the current phase while preserving auto-detection as a fallback.
 
 ### Changed
-- Migrated package imports and `peerDependencies` from `@mariozechner/*` to `@earendil-works/*` to match the Pi namespace migration (v0.74+).
-- Migrated `@sinclair/typebox` to `typebox` (TypeBox v1.x) to match the Pi dependency migration.
-- Rewrote `promptGuidelines` to use actual function-call syntax, eliminating executor guesswork about what parameters to pass.
+- Migrated package imports and `peerDependencies` from `@mariozechner/*` to `@earendil-works/*` for the Pi namespace migration (v0.74+).
+- Migrated `@sinclair/typebox` to `typebox` (TypeBox v1.x) for the Pi dependency migration.
+- Rewrote `promptGuidelines` with actual function-call syntax to remove executor guesswork around advisor parameters.
 
 ## [0.2.0] - 2026-04-13
 
