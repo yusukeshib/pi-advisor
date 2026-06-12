@@ -134,10 +134,14 @@ The extension infers the executor's current stage from recent tool activity:
 .
 ├── index.ts              # Extension entrypoint (tool + command registration)
 ├── src/
-│   └── advisor-messages.ts   # Transcript curation for advisor context
+│   ├── advisor-messages.ts   # Transcript curation for advisor context
+│   └── advisor-signals.ts    # Pure stage/signal detection logic
 ├── tests/
-│   └── package.test.mjs      # Package manifest & smoke tests
+│   ├── advisor-signals.test.mjs  # Signal logic unit tests
+│   └── package.test.mjs          # Package manifest & smoke tests
 ├── package.json
+├── package-lock.json
+├── tsconfig.json
 ├── CHANGELOG.md
 ├── README.md
 └── LICENSE
@@ -146,7 +150,10 @@ The extension infers the executor's current stage from recent tool activity:
 ## Development
 
 ```bash
-# Run tests
+# Run typecheck + tests
+npm run check
+
+# Run tests only
 npm test
 
 # Smoke-load as an extension
