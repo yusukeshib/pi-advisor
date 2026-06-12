@@ -71,9 +71,11 @@ interface RunToolEvent {
 const DEFAULT_CONFIG: AdvisorConfig = {
 	enabled: false,
 	provider: "anthropic",
-	model: "claude-opus-4-6",
+	model: "claude-fable-5",
 	maxUsesPerRun: 3,
-	maxTokens: 8192,
+	// Adaptive-thinking models count thinking tokens against the output cap;
+	// 8k left too little room for the actual advice at reasoning=high.
+	maxTokens: 16384,
 	reasoning: "high",
 	maxContextMessages: 18,
 };
@@ -196,7 +198,8 @@ function extractPrimaryText(content: unknown): string {
 }
 
 function extractBashExitCode(text: string): number | undefined {
-	const match = text.match(/exit code:\s*(\d+)/i);
+	// Pi's bash tool reports failures as "Command exited with code N".
+	const match = text.match(/exit(?:ed)?\s+(?:with\s+)?code:?\s*(\d+)/i);
 	if (!match) return undefined;
 	const code = Number.parseInt(match[1], 10);
 	return Number.isNaN(code) ? undefined : code;
@@ -437,7 +440,6 @@ The advisor sees the conversation transcript, your system prompt, and recent too
 					details: { error: "max_uses_exceeded", callNumber: usesThisRun } as AdvisorDetails,
 				};
 			}
-			usesThisRun++;
 
 			const model = ctx.modelRegistry.find(config.provider, config.model);
 			if (!model) {
@@ -458,7 +460,7 @@ The advisor sees the conversation transcript, your system prompt, and recent too
 
 			const stageInfo = params.stage
 				? { stage: params.stage, reason: "Executor explicitly signaled this stage." }
-				: detectStage(runToolEvents, usesThisRun);
+				: detectStage(runToolEvents, usesThisRun + 1);
 			const recentToolActivity = buildRecentToolActivity(runToolEvents);
 			const branch = ctx.sessionManager.getBranch();
 			const signals = buildExecutorSignals(runToolEvents);
@@ -469,6 +471,9 @@ The advisor sees the conversation transcript, your system prompt, and recent too
 					details: { error: "no_context", callNumber: usesThisRun, stage: stageInfo.stage } as AdvisorDetails,
 				};
 			}
+
+			// Only count uses once all preconditions passed and a real model call is about to happen.
+			usesThisRun++;
 
 			const executorSystemPrompt = ctx.getSystemPrompt();
 			const advisorPrompt = buildAdvisorPrompt(executorSystemPrompt, buildActiveToolsSummary(pi), stageInfo);
@@ -602,23 +607,27 @@ The advisor sees the conversation transcript, your system prompt, and recent too
 
 			switch (subcommand) {
 				case "on": {
+					let provider = config.provider;
+					let modelId = config.model;
 					if (rest) {
-						const modelParts = rest.split("/");
-						if (modelParts.length === 2) {
-							config.provider = modelParts[0];
-							config.model = modelParts[1];
-						} else {
-							ctx.ui.notify("Invalid format. Use: /advisor on provider/model (e.g., anthropic/claude-opus-4-6)", "warning");
+						// Split on the first slash only: model IDs may contain slashes (e.g. OpenRouter).
+						const slash = rest.indexOf("/");
+						if (slash <= 0 || slash === rest.length - 1) {
+							ctx.ui.notify("Invalid format. Use: /advisor on provider/model (e.g., anthropic/claude-fable-5)", "warning");
 							return;
 						}
+						provider = rest.slice(0, slash);
+						modelId = rest.slice(slash + 1);
 					}
 
-					const model = ctx.modelRegistry.find(config.provider, config.model);
+					const model = ctx.modelRegistry.find(provider, modelId);
 					if (!model) {
-						ctx.ui.notify(`Model ${config.provider}/${config.model} not found`, "error");
+						ctx.ui.notify(`Model ${provider}/${modelId} not found`, "error");
 						return;
 					}
 
+					config.provider = provider;
+					config.model = modelId;
 					config.enabled = true;
 					saveConfig(config);
 					updateToolRegistration();

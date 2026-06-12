@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Default advisor model is now `anthropic/claude-fable-5` (was `claude-opus-4-6`). Existing `advisor.json` files keep their configured model.
+- Default `maxTokens` raised from `8192` to `16384` — adaptive-thinking models (Opus 4.6+, Fable 5) count thinking tokens against the output cap, and 8k risked truncated advice at `reasoning=high`.
+- `/advisor on provider/model` now splits on the first slash only, so model IDs containing slashes (e.g. OpenRouter) work.
+
+### Fixed
+- Bash exit codes are now actually extracted from tool output: the parser looked for `exit code: N` while Pi's bash tool reports `Command exited with code N`, so the `(exit N)` suffix in advisor context never appeared.
+- `/advisor on provider/model` no longer corrupts the in-memory config when the model is not found — validation now happens before the provider/model are assigned, so a later `/advisor config key=value` can no longer persist an invalid model.
+- Failed advisor calls (model not found, missing API key, empty context) no longer consume the per-run usage quota; only calls that actually reach the model count.
+
 ## [0.2.1] - 2026-05-09
 
 ### Added

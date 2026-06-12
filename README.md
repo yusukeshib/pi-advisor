@@ -46,7 +46,7 @@ Enable the advisor with the default model:
 Enable with a specific model:
 
 ```
-/advisor on anthropic/claude-opus-4-6
+/advisor on anthropic/claude-fable-5
 ```
 
 ### Commands
@@ -71,9 +71,9 @@ Enable with a specific model:
 | Key | Default | Description |
 |---|---|---|
 | `provider` | `anthropic` | Model provider |
-| `model` | `claude-opus-4-6` | Model identifier |
+| `model` | `claude-fable-5` | Model identifier |
 | `maxUsesPerRun` | `3` | Max advisor calls per agent run |
-| `maxTokens` | `8192` | Max output tokens per advisor call |
+| `maxTokens` | `16384` | Max output tokens per advisor call (thinking tokens count against this on adaptive-thinking models) |
 | `reasoning` | `high` | Reasoning effort level (`minimal`, `low`, `medium`, `high`, `xhigh`) |
 | `maxContextMessages` | `18` | Max transcript messages sent to advisor |
 
