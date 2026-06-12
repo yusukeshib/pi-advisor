@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- TypeScript typechecking: `tsconfig.json`, dev dependencies on the pi packages, and a `typecheck` script wired into `npm run check`.
+- Unit tests for stage detection, tool-result summarization, exit-code parsing, and verification-command matching (`tests/advisor-signals.test.mjs`).
+- Edit/write summaries in advisor context now include `(+added/-removed)` line stats derived from the edit tool's unified patch details.
+
 ### Changed
+- Extracted pure signal logic (`detectStage`, `summarizeToolResult`, `buildExecutorSignals`, `isVerificationCommand`, `shouldNudge`) into `src/advisor-signals.ts` so it is unit-testable without pi imports.
+- Tool activity tracking now listens to the `tool_result` event, which carries tool input and typed details directly — the `tool_execution_start`/`tool_execution_end` bookkeeping and the per-call args map are gone.
+- `isVerificationCommand` now matches the leading token of each pipeline segment instead of substrings anywhere in the command, so paths like `cat tests/foo.test.ts` no longer count as verification runs.
 - Default advisor model is now `anthropic/claude-fable-5` (was `claude-opus-4-6`). Existing `advisor.json` files keep their configured model.
 - Default `maxTokens` raised from `8192` to `16384` — adaptive-thinking models (Opus 4.6+, Fable 5) count thinking tokens against the output cap, and 8k risked truncated advice at `reasoning=high`.
 - `/advisor on provider/model` now splits on the first slash only, so model IDs containing slashes (e.g. OpenRouter) work.

@@ -1,16 +1,16 @@
+import type { ExecutorSignals } from "./advisor-signals.ts";
+
 type MessageContent = string | Array<{ type?: string; text?: string; [key: string]: unknown }> | unknown;
 
 type AdvisorMessage = {
 	role: string;
-	content: MessageContent;
+	content?: MessageContent;
 	timestamp?: number;
-	[key: string]: unknown;
 };
 
 type SessionEntryLike = {
 	type?: string;
 	message?: AdvisorMessage;
-	[key: string]: unknown;
 };
 
 type AdvisorStageInfoLike = {
@@ -52,42 +52,12 @@ export function summarizeAssistantContent(content: Array<{ type?: string; text?:
 		.map((block) => ({ ...block, text: clampText(block.text) }));
 }
 
-export type ExecutorSignals = {
-	phase: "exploring" | "mutating" | "verifying" | "stuck";
-	mutationsCount: number;
-	verificationCommands: string[];
-	recentFailures: string[];
-};
-
 function buildContextPolicy(): string {
 	return `Context policy:
 - Assistant tool calls are stripped from the transcript below.
 - Tool results are not replayed.
 - User task framing is retained where possible.
 - If truncated: earliest messages omitted, focus on recent evidence.`;
-}
-
-export function isVerificationCommand(command?: string): boolean {
-	if (!command) return false;
-	return /\b(test|tests|jest|vitest|pytest|rspec|cargo test|go test|npm run test|npm test|pnpm test|pnpm run test|yarn test|check|lint|typecheck|tsc|build)\b/i.test(command);
-}
-
-export function shouldNudge(
-	events: { toolName: string; command?: string }[],
-	advisorCallsThisRun: number,
-	advisorEnabled: boolean,
-	maxUsesPerRun: number,
-): string | null {
-	if (!advisorEnabled) return null;
-	if (advisorCallsThisRun >= maxUsesPerRun) return null;
-
-	const hasMutation = events.some((e) => e.toolName === "edit" || e.toolName === "write");
-	const hasVerification = events.some((e) => e.toolName === "bash" && isVerificationCommand(e.command));
-
-	if (hasMutation && !hasVerification) {
-		return "Code changed, tests not run. Consider advisor({stage: 'final-check'})";
-	}
-	return null;
 }
 
 function buildSignalsBlock(signals: ExecutorSignals): string {

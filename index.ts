@@ -23,9 +23,18 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import { completeSimple, type TextContent, type ThinkingContent, type ThinkingLevel } from "@earendil-works/pi-ai";
+import { completeSimple, type Message, type TextContent, type ThinkingContent, type ThinkingLevel } from "@earendil-works/pi-ai";
 import { getAgentDir, keyHint, type ExtensionAPI, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import { buildAdvisorMessages, isVerificationCommand, shouldNudge, type ExecutorSignals } from "./src/advisor-messages.ts";
+import { buildAdvisorMessages } from "./src/advisor-messages.ts";
+import {
+	buildExecutorSignals,
+	detectStage,
+	shouldNudge,
+	summarizeToolResult,
+	type AdvisorStage,
+	type AdvisorStageInfo,
+	type RunToolEvent,
+} from "./src/advisor-signals.ts";
 import { Container, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
@@ -45,27 +54,12 @@ interface AdvisorUsage {
 	model: string;
 }
 
-type AdvisorStage = "initial" | "recovery" | "final-check";
-
-interface AdvisorStageInfo {
-	stage: AdvisorStage;
-	reason: string;
-}
-
 interface AdvisorDetails {
 	usage?: AdvisorUsage;
 	callNumber: number;
 	stage?: AdvisorStage;
 	error?: string;
 	message?: string;
-}
-
-interface RunToolEvent {
-	toolName: string;
-	summary: string;
-	command?: string;
-	isError: boolean;
-	timestamp: number;
 }
 
 const DEFAULT_CONFIG: AdvisorConfig = {
@@ -188,106 +182,6 @@ function squeezeWhitespace(text: string): string {
 	return text.replace(/\s+/g, " ").trim();
 }
 
-function extractPrimaryText(content: unknown): string {
-	if (!Array.isArray(content)) return "";
-	return content
-		.filter((block): block is { type: string; text: string } => Boolean(block) && typeof block === "object" && (block as { type?: string }).type === "text")
-		.map((block) => block.text)
-		.join("\n")
-		.trim();
-}
-
-function extractBashExitCode(text: string): number | undefined {
-	// Pi's bash tool reports failures as "Command exited with code N".
-	const match = text.match(/exit(?:ed)?\s+(?:with\s+)?code:?\s*(\d+)/i);
-	if (!match) return undefined;
-	const code = Number.parseInt(match[1], 10);
-	return Number.isNaN(code) ? undefined : code;
-}
-
-function summarizeToolExecution(toolName: string, args: any, result: any, isError: boolean): RunToolEvent {
-	const text = extractPrimaryText(result?.content);
-	const oneLine = squeezeWhitespace(text).slice(0, 140);
-
-	switch (toolName) {
-		case "read": {
-			const path = typeof args?.path === "string" ? args.path : "(unknown path)";
-			return { toolName, summary: `read ${path}`, isError, timestamp: Date.now() };
-		}
-		case "edit":
-		case "write": {
-			const path = typeof args?.path === "string" ? args.path : "(unknown path)";
-			return { toolName, summary: `${toolName} ${path}`, isError, timestamp: Date.now() };
-		}
-		case "bash": {
-			const command = typeof args?.command === "string" ? squeezeWhitespace(args.command).slice(0, 140) : undefined;
-			const exitCode = extractBashExitCode(text);
-			const suffix = exitCode !== undefined ? ` (exit ${exitCode})` : isError ? " (error)" : "";
-			return {
-				toolName,
-				summary: `$ ${command ?? "(unknown command)"}${suffix}`,
-				command,
-				isError: isError || (exitCode !== undefined && exitCode !== 0),
-				timestamp: Date.now(),
-			};
-		}
-		default:
-			return {
-				toolName,
-				summary: oneLine ? `${toolName}: ${oneLine}` : toolName,
-				isError,
-				timestamp: Date.now(),
-			};
-	}
-}
-
-function detectStage(events: RunToolEvent[], advisorCallsThisRun: number): AdvisorStageInfo {
-	const hasMutation = events.some((event) => event.toolName === "edit" || event.toolName === "write");
-	const hasVerification = events.some((event) => event.toolName === "bash" && isVerificationCommand(event.command));
-	const recentFailure = [...events].reverse().find((event) => event.isError);
-	const explorationCount = events.filter((event) => event.toolName === "read" || event.toolName === "bash").length;
-
-	if (hasMutation && hasVerification) {
-		return {
-			stage: "final-check",
-			reason: "Implementation changes exist and verification output is already in the transcript.",
-		};
-	}
-
-	if (recentFailure) {
-		return {
-			stage: "recovery",
-			reason: `Recent failure signal: ${recentFailure.summary}`,
-		};
-	}
-
-	if (hasMutation && advisorCallsThisRun > 1) {
-		return {
-			stage: "recovery",
-			reason: "Implementation has started and the executor is checking course again before finishing.",
-		};
-	}
-
-	if (!hasMutation && explorationCount >= 2) {
-		return {
-			stage: "initial",
-			reason: "Exploratory reads or commands have happened, but the executor has not committed to file changes yet.",
-		};
-	}
-
-	if (hasMutation) {
-		return {
-			stage: "recovery",
-			reason: "Implementation is in progress, but there is not enough verification evidence yet for a final check.",
-		};
-	}
-
-	return {
-		stage: "initial",
-		reason: "The executor is still in the early orientation phase.",
-	};
-}
-
 function buildActiveToolsSummary(pi: ExtensionAPI): string {
 	const activeToolNames = new Set(pi.getActiveTools().filter((name) => name !== "advisor"));
 	const activeTools = pi
@@ -308,28 +202,6 @@ function buildRecentToolActivity(events: RunToolEvent[]): string {
 		.slice(-RECENT_TOOL_SUMMARY_COUNT)
 		.map((event) => `- ${event.summary}`)
 		.join("\n");
-}
-
-function buildExecutorSignals(events: RunToolEvent[]): ExecutorSignals {
-	const mutationsCount = events.filter((e) => e.toolName === "edit" || e.toolName === "write").length;
-	const verificationCommands = events
-		.filter((e) => e.toolName === "bash" && isVerificationCommand(e.command))
-		.map((e) => e.command!);
-	const recentFailures = events
-		.filter((e) => e.isError)
-		.slice(-3)
-		.map((e) => e.summary);
-
-	let phase: ExecutorSignals["phase"] = "exploring";
-	if (mutationsCount > 0 && verificationCommands.length > 0) {
-		phase = "verifying";
-	} else if (mutationsCount > 0) {
-		phase = "mutating";
-	} else if (recentFailures.length > 0) {
-		phase = "stuck";
-	}
-
-	return { phase, mutationsCount, verificationCommands, recentFailures };
 }
 
 function buildAdvisorPrompt(executorSystemPrompt: string, activeToolsSummary: string, stageInfo: AdvisorStageInfo): string {
@@ -363,7 +235,6 @@ export default function advisorExtension(pi: ExtensionAPI) {
 	let config = loadConfig();
 	let usesThisRun = 0;
 	let runToolEvents: RunToolEvent[] = [];
-	const toolArgsById = new Map<string, any>();
 
 	pi.on("before_agent_start", async (event) => {
 		config = loadConfig();
@@ -376,19 +247,14 @@ export default function advisorExtension(pi: ExtensionAPI) {
 	pi.on("agent_start", async (_, ctx) => {
 		usesThisRun = 0;
 		runToolEvents = [];
-		toolArgsById.clear();
 		ctx.ui.setStatus("advisor-nudge", undefined);
 	});
 
-	pi.on("tool_execution_start", async (event) => {
-		toolArgsById.set(event.toolCallId, event.args);
-	});
-
-	pi.on("tool_execution_end", async (event, ctx) => {
+	// tool_result carries the tool input and typed details directly, so no
+	// tool_execution_start/end bookkeeping is needed.
+	pi.on("tool_result", async (event, ctx) => {
 		if (event.toolName === "advisor") return;
-		const args = toolArgsById.get(event.toolCallId);
-		toolArgsById.delete(event.toolCallId);
-		runToolEvents.push(summarizeToolExecution(event.toolName, args, event.result, event.isError));
+		runToolEvents.push(summarizeToolResult(event));
 
 		const hint = shouldNudge(runToolEvents, usesThisRun, config.enabled, config.maxUsesPerRun);
 		ctx.ui.setStatus("advisor-nudge", hint ?? undefined);
@@ -483,7 +349,9 @@ The advisor sees the conversation transcript, your system prompt, and recent too
 					model,
 					{
 						systemPrompt: advisorPrompt,
-						messages: advisorMessages,
+						// Safe cast: assistant entries are spread from real AssistantMessages
+						// (text-only content), synthetic entries are well-formed UserMessages.
+						messages: advisorMessages as Message[],
 					},
 					{
 						apiKey: auth.apiKey,

@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { buildAdvisorMessages, shouldNudge } from '../src/advisor-messages.ts';
+import { buildAdvisorMessages } from '../src/advisor-messages.ts';
+import { shouldNudge } from '../src/advisor-signals.ts';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
