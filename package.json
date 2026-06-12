@@ -1,6 +1,6 @@
 {
   "name": "pi-advisor",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Pi extension package that adds a Claude-style advisor tool for strategic guidance during complex agent tasks.",
   "type": "module",
   "repository": {
