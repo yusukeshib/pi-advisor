@@ -335,9 +335,11 @@ The advisor sees the conversation transcript, your system prompt, and recent too
 						maxTokens: config.maxTokens,
 						signal,
 						reasoning: config.reasoning,
-						// Session-affine cache routing: repeated consultations replay
-						// mostly the same prefix, so let the provider cache it.
-						sessionId: ctx.sessionManager.getSessionId(),
+						// Keep advisor traffic in a separate provider session from the executor.
+						// OpenAI Codex Responses reuses WebSocket continuation state per
+						// session ID; sharing it makes the advisor send an executor response
+						// ID as `previous_response_id`, which the API rejects.
+						sessionId: `advisor:${ctx.sessionManager.getSessionId()}`,
 					},
 				);
 
