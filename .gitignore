@@ -1,0 +1,7 @@
+node_modules/
+*.tgz
+.env*
+consultations/
+*.pending.json
+*.completed.json
+*.finalizing.json
