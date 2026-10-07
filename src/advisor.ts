@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
+import {
+  cleanupSessionResources,
+  type AssistantMessage,
+  type Usage,
+} from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { defaults, loadConfig, qualifiedModel } from "./config.js";
 import { writeLog } from "./logs.js";
@@ -60,7 +64,7 @@ export async function consult(
   let config = defaults();
   const record: Record<string, unknown> = {
     schemaVersion: 1,
-    packageVersion: "0.1.0",
+    packageVersion: "0.1.1",
     promptVersion: 1,
     id,
     sessionId: ctx.sessionManager.getSessionId(),
@@ -134,6 +138,10 @@ export async function consult(
       id: model.id,
       api: model.api,
     };
+    if (model.api === "openai-codex-responses")
+      warnings.push(
+        "Pi 1.0.4's Codex adapter does not send maxTokens to the provider; the configured value is not an output-token or cost cap.",
+      );
     record.status = "pending";
     await log(false);
     const interrupted = new Promise<never>((_, reject) => {
@@ -222,6 +230,16 @@ export async function consult(
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener("abort", cancel);
+    if (record.modelCalls === 1) {
+      try {
+        // Each consultation owns a fresh provider session, never the parent session.
+        cleanupSessionResources(id);
+      } catch {
+        warnings.push(
+          "Provider session resources could not be fully released; raw cleanup error omitted.",
+        );
+      }
+    }
   }
   record.answer = answer;
   record.accounting = accounting(usage, success);

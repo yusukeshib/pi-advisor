@@ -1,6 +1,6 @@
 {
   "name": "@yusukeshib/pi-advisor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Explicit, one-shot second opinions for Pi with private reviewable logs",
   "type": "module",
   "license": "MIT",

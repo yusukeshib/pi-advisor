@@ -12,6 +12,7 @@ import {
   realpath,
   open,
   chmod,
+  rm,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,7 +20,11 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
+import {
+  registerSessionResourceCleanup,
+  type AssistantMessage,
+  type Usage,
+} from "@earendil-works/pi-ai";
 import register from "../index.js";
 import { accounting, consult, SYSTEM } from "../src/advisor.js";
 import { loadConfig } from "../src/config.js";
@@ -153,6 +158,7 @@ test("one call, explicit prompt, override isolation, usage and private logs", as
     assert.equal(JSON.parse(text).request.system, SYSTEM);
   }
   assert.equal(b.isError, false);
+  assert.deepEqual(b.details.warnings, []);
 });
 test("invalid input/model/size never falls back or makes calls", async () => {
   const f = await fixture({ maxInputChars: 1000 });
@@ -315,4 +321,73 @@ test("existing unsafe directory and pending symlink cannot be overwritten", asyn
   await symlink(target, join(f.logs, `${id}.pending.json`));
   await assert.rejects(writeLog(f.logs, id, {}, false));
   assert.equal(await readFile(target, "utf8"), "untouched");
+});
+
+test("cleanup releases only the consultation session on every dispatched outcome", async (t) => {
+  const cleaned: (string | undefined)[] = [];
+  const unregister = registerSessionResourceCleanup((id) => cleaned.push(id));
+  t.after(unregister);
+  for (const [mode, status] of [
+    ["ok", "completed"],
+    ["length", "incomplete"],
+    ["throw", "failed"],
+    ["hang", "timeout"],
+    ["cancel", "cancelled"],
+  ]) {
+    const f = await fixture(
+      { timeoutMs: mode === "hang" ? 10 : 1000 },
+      mode === "cancel" ? "hang" : mode,
+    );
+    t.after(() => rm(f.dir, { recursive: true, force: true }));
+    const controller = new AbortController();
+    if (mode === "cancel") {
+      const stream = f.ctx.modelRegistry.streamSimple.bind(f.ctx.modelRegistry);
+      f.ctx.modelRegistry.streamSimple = (...args) => {
+        const response = stream(...args);
+        queueMicrotask(() => controller.abort());
+        return response;
+      };
+    }
+    const result = await consult(input, f.ctx, f.dir, controller.signal);
+    assert.equal(result.details.status, status);
+    assert.equal(cleaned.at(-1), result.details.id);
+    assert.equal(f.calls[0].opts.sessionId, result.details.id);
+  }
+  assert.equal(cleaned.length, 5);
+  assert.ok(!cleaned.includes("isolated-test"));
+  assert.ok(!cleaned.includes(undefined));
+});
+
+test("cleanup failures warn without losing the answer or exposing raw errors", async (t) => {
+  const f = await fixture();
+  t.after(() => rm(f.dir, { recursive: true, force: true }));
+  const unregister = registerSessionResourceCleanup(() => {
+    throw new Error("private-cleanup-error");
+  });
+  t.after(unregister);
+  const result = await consult(input, f.ctx, f.dir);
+  assert.equal(result.isError, false);
+  assert.equal(result.usage, usage);
+  assert.match(result.content[0].text, /Recommendation: simplify/);
+  assert.ok(
+    result.details.warnings.some((warning) => warning.includes("resources")),
+  );
+  const record = JSON.parse(
+    await readFile(join(f.logs, `${result.details.id}.completed.json`), "utf8"),
+  );
+  assert.deepEqual(record.warnings, result.details.warnings);
+  assert.ok(!JSON.stringify({ result, record }).includes("private-cleanup-error"));
+});
+
+test("cleanup is skipped when validation or pre-cancellation prevents dispatch", async (t) => {
+  const f = await fixture();
+  t.after(() => rm(f.dir, { recursive: true, force: true }));
+  const cleaned: (string | undefined)[] = [];
+  t.after(registerSessionResourceCleanup((id) => cleaned.push(id)));
+  await consult({ ...input, question: "" }, f.ctx, f.dir);
+  const controller = new AbortController();
+  controller.abort();
+  await consult(input, f.ctx, f.dir, controller.signal);
+  assert.equal(f.calls.length, 0);
+  assert.deepEqual(cleaned, []);
 });
